@@ -5,6 +5,11 @@ from app.database.database import Base, engine
 from app.database.migrate import ensure_telemetry_midnight_columns
 
 from app.models.telemetry import TelemetryRecord
+from app.models.incident import Incident
+from app.models.incident_event import IncidentEvent
+from app.models.investigation import Investigation
+from app.models.recommendation import Recommendation
+from app.models.operator_decision import OperatorDecision
 from app.routers.auth import router as auth_router
 from app.routers.telemetry import router as telemetry_router
 
