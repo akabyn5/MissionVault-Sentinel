@@ -44,6 +44,7 @@ def receive_telemetry(data: Telemetry):
         "message": "Telemetry received successfully",
         "satellite": data.satellite_id,
         "analysis": analysis,
+        "incident": record.get("incident"),
         "midnight": record.get("midnight", {})
     }
 

@@ -9,6 +9,7 @@ from app.database.database import SessionLocal
 from app.models.telemetry import TelemetryRecord
 from app.schemas.telemetry import Telemetry
 from app.services.midnight_service import anchor_telemetry
+from app.services.incident_service import create_incident
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,6 +77,11 @@ def save_telemetry(data: Telemetry, analysis: dict) -> dict:
         db.commit()
         db.refresh(record)
 
+        incident = create_incident(
+            data=data,
+            analysis=analysis,
+            )
+
         anchor_payload = {
             "record_id": record.id,
             "telemetry": {
@@ -113,9 +119,20 @@ def save_telemetry(data: Telemetry, analysis: dict) -> dict:
         logger.info(
             "Total stored packets: %d",
             db.scalar(select(func.count(TelemetryRecord.id)))
-        )
+            )
 
-        return _serialize_record(record)
+        serialized_record = _serialize_record(record)
+        # ---------------------------------------------------------
+        # Create MissionVault Sentinel incident
+        # ---------------------------------------------------------
+        incident = create_incident(
+            data=data,
+            analysis=analysis,
+            )
+
+        serialized_record["incident"] = incident
+
+        return serialized_record
 
 
 def get_all_telemetry() -> list[dict]:

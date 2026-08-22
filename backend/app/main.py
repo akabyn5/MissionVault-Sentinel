@@ -12,6 +12,7 @@ from app.models.recommendation import Recommendation
 from app.models.operator_decision import OperatorDecision
 from app.routers.auth import router as auth_router
 from app.routers.telemetry import router as telemetry_router
+from app.routers.incidents import router as incidents_router
 
 # Run schema repair for older SQLite databases.
 ensure_telemetry_midnight_columns(engine)
@@ -37,6 +38,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(telemetry_router)
+app.include_router(incidents_router)
 
 @app.get("/")
 def root():
