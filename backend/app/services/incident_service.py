@@ -1,6 +1,5 @@
 # backend/app/services/incident_service.py
 
-import json
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -8,6 +7,7 @@ from sqlalchemy import select
 from app.database.database import SessionLocal
 from app.models.incident import Incident
 from app.models.incident_event import IncidentEvent
+from app.models.telemetry import TelemetryRecord
 
 
 def _utc_now() -> str:
@@ -24,22 +24,23 @@ def _detect_primary_anomaly(alerts: list[str]) -> str:
     if not alerts:
         return "unknown"
 
-    first_alert = alerts[0].lower()
+    for alert in alerts:
+        normalized = str(alert).lower()
 
-    if "battery" in first_alert:
-        return "battery"
+        if "battery" in normalized:
+            return "battery"
 
-    if "temperature" in first_alert:
-        return "temperature"
+        if "temperature" in normalized:
+            return "temperature"
 
-    if "signal" in first_alert:
-        return "signal"
+        if "signal" in normalized:
+            return "signal"
 
-    if "cpu" in first_alert:
-        return "cpu"
+        if "cpu" in normalized:
+            return "cpu"
 
-    if "payload" in first_alert:
-        return "payload"
+        if "payload" in normalized:
+            return "payload"
 
     return "unknown"
 
@@ -59,17 +60,44 @@ def _extract_numeric_value(data, anomaly_type: str) -> float:
     if anomaly_type == "cpu":
         return float(data.cpu_load)
 
-    # Payload status is not numeric.
+    # Payload status is textual, so there is no numeric value.
     return 0.0
+
+
+def _serialize_telemetry(record: TelemetryRecord) -> dict:
+    """Convert a telemetry database record to a JSON-safe dictionary."""
+
+    return {
+        "id": record.id,
+        "satellite_id": record.satellite_id,
+        "timestamp": record.timestamp,
+        "temperature": record.temperature,
+        "battery": record.battery,
+        "cpu_load": record.cpu_load,
+        "signal_strength": record.signal_strength,
+        "payload_status": record.payload_status,
+        "is_anomaly": bool(record.is_anomaly),
+        "severity": record.severity,
+        "alerts": record.alerts,
+    }
+
+
+def _serialize_incident(incident: Incident) -> dict:
+    """Convert an incident model to a dictionary."""
+
+    return {
+        "id": incident.id,
+        "satellite_id": incident.satellite_id,
+        "created_at": incident.created_at,
+        "severity": incident.severity,
+        "status": incident.status,
+        "primary_anomaly": incident.primary_anomaly,
+    }
 
 
 def create_incident(data, analysis: dict) -> dict | None:
     """
     Create a new incident when telemetry analysis reports an anomaly.
-
-    Returns:
-        Serialized incident dictionary if an anomaly exists.
-        None if telemetry is normal.
     """
 
     if not analysis.get("is_anomaly", False):
@@ -101,7 +129,6 @@ def create_incident(data, analysis: dict) -> dict | None:
         db.commit()
         db.refresh(incident)
 
-        # Create the first event associated with the incident.
         event = IncidentEvent(
             incident_id=incident.id,
             timestamp=data.timestamp.isoformat(),
@@ -116,17 +143,190 @@ def create_incident(data, analysis: dict) -> dict | None:
         db.add(event)
         db.commit()
 
+        return _serialize_incident(incident)
+
+
+def _find_incident_trigger_record(
+    db,
+    incident: Incident,
+) -> TelemetryRecord | None:
+    """
+    Find the telemetry record that triggered the incident.
+
+    IncidentEvent stores the telemetry timestamp, so we use that
+    timestamp together with the satellite ID to identify the
+    original telemetry record.
+    """
+
+    event = db.scalar(
+        select(IncidentEvent)
+        .where(
+            IncidentEvent.incident_id == incident.id
+        )
+        .order_by(IncidentEvent.id.asc())
+        .limit(1)
+    )
+
+    if event is None:
+        return None
+
+    record = db.scalar(
+        select(TelemetryRecord)
+        .where(
+            TelemetryRecord.satellite_id == incident.satellite_id,
+            TelemetryRecord.timestamp == event.timestamp,
+        )
+        .order_by(TelemetryRecord.id.asc())
+        .limit(1)
+    )
+
+    return record
+
+
+def reconstruct_incident(
+    incident_id: int,
+    before: int = 10,
+    after: int = 5,
+) -> dict | None:
+    """
+    Reconstruct the telemetry context around an incident.
+
+    Default:
+        10 telemetry packets before the triggering packet
+        1 triggering packet
+        5 telemetry packets after the triggering packet
+
+    The number of packets can be changed through the optional
+    before/after parameters.
+    """
+
+    if before < 0:
+        before = 0
+
+    if after < 0:
+        after = 0
+
+    # Protect the endpoint from excessively large requests.
+    before = min(before, 100)
+    after = min(after, 100)
+
+    with SessionLocal() as db:
+        incident = db.scalar(
+            select(Incident).where(
+                Incident.id == incident_id
+            )
+        )
+
+        if incident is None:
+            return None
+
+        trigger_record = _find_incident_trigger_record(
+            db,
+            incident,
+        )
+
+        if trigger_record is None:
+            return {
+                "incident": _serialize_incident(incident),
+                "trigger": None,
+                "timeline": [],
+                "context": {
+                    "before": before,
+                    "after": after,
+                    "available_after_packets": 0,
+                    "message": (
+                        "The telemetry record that triggered "
+                        "this incident could not be found."
+                    ),
+                },
+            }
+
+        # ---------------------------------------------------------
+        # Get previous telemetry
+        # ---------------------------------------------------------
+        previous_records = list(
+            db.scalars(
+                select(TelemetryRecord)
+                .where(
+                    TelemetryRecord.satellite_id
+                    == incident.satellite_id,
+                    TelemetryRecord.id < trigger_record.id,
+                )
+                .order_by(TelemetryRecord.id.desc())
+                .limit(before)
+            ).all()
+        )
+
+        previous_records.reverse()
+
+        # ---------------------------------------------------------
+        # Get subsequent telemetry
+        # ---------------------------------------------------------
+        following_records = list(
+            db.scalars(
+                select(TelemetryRecord)
+                .where(
+                    TelemetryRecord.satellite_id
+                    == incident.satellite_id,
+                    TelemetryRecord.id > trigger_record.id,
+                )
+                .order_by(TelemetryRecord.id.asc())
+                .limit(after)
+            ).all()
+        )
+
+        timeline_records = (
+            previous_records
+            + [trigger_record]
+            + following_records
+        )
+
         return {
-            "id": incident.id,
-            "satellite_id": incident.satellite_id,
-            "created_at": incident.created_at,
-            "severity": incident.severity,
-            "status": incident.status,
-            "primary_anomaly": incident.primary_anomaly,
+            "incident": _serialize_incident(incident),
+            "trigger": {
+                "telemetry_id": trigger_record.id,
+                "relative_position": 0,
+            },
+            "timeline": [
+                {
+                    "position": index - len(previous_records),
+                    "role": (
+                        "before"
+                        if index < len(previous_records)
+                        else (
+                            "trigger"
+                            if index == len(previous_records)
+                            else "after"
+                        )
+                    ),
+                    "telemetry": _serialize_telemetry(
+                        record
+                    ),
+                }
+                for index, record in enumerate(
+                    timeline_records
+                )
+            ],
+            "context": {
+                "requested_before": before,
+                "requested_after": after,
+                "available_before_packets": len(
+                    previous_records
+                ),
+                "available_after_packets": len(
+                    following_records
+                ),
+                "total_packets": len(
+                    timeline_records
+                ),
+            },
         }
 
 
-def get_incident(incident_id: int) -> dict | None:
+def get_incident(
+    incident_id: int,
+    include_reconstruction: bool = False,
+) -> dict | None:
     """Return one incident by ID."""
 
     with SessionLocal() as db:
@@ -139,14 +339,16 @@ def get_incident(incident_id: int) -> dict | None:
         if incident is None:
             return None
 
-        return {
-            "id": incident.id,
-            "satellite_id": incident.satellite_id,
-            "created_at": incident.created_at,
-            "severity": incident.severity,
-            "status": incident.status,
-            "primary_anomaly": incident.primary_anomaly,
-        }
+        result = _serialize_incident(incident)
+
+    if include_reconstruction:
+        reconstruction = reconstruct_incident(
+            incident_id
+        )
+
+        result["reconstruction"] = reconstruction
+
+    return result
 
 
 def get_all_incidents() -> list[dict]:
@@ -160,13 +362,6 @@ def get_all_incidents() -> list[dict]:
         ).all()
 
         return [
-            {
-                "id": incident.id,
-                "satellite_id": incident.satellite_id,
-                "created_at": incident.created_at,
-                "severity": incident.severity,
-                "status": incident.status,
-                "primary_anomaly": incident.primary_anomaly,
-            }
+            _serialize_incident(incident)
             for incident in incidents
         ]
