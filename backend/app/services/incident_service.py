@@ -94,6 +94,29 @@ def _serialize_incident(incident: Incident) -> dict:
         "primary_anomaly": incident.primary_anomaly,
     }
 
+def manually_create_incident(
+    satellite_id: str,
+    severity: str,
+    primary_anomaly: str,
+) -> dict:
+    """
+    Manually create an incident through the API.
+    """
+
+    incident = Incident(
+        satellite_id=satellite_id,
+        created_at=_utc_now(),
+        severity=severity.lower(),
+        status="open",
+        primary_anomaly=primary_anomaly.lower(),
+    )
+
+    with SessionLocal() as db:
+        db.add(incident)
+        db.commit()
+        db.refresh(incident)
+
+        return _serialize_incident(incident)
 
 def create_incident(data, analysis: dict) -> dict | None:
     """
