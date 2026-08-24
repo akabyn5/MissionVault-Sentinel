@@ -12,10 +12,10 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.database.database import SessionLocal
-from app.models.incident import Incident
 from app.models.investigation import Investigation
-from app.schemas.investigation import AIInvestigationResponse
+from app.schemas.investigation import InvestigationResponse
 from app.services.incident_service import reconstruct_incident
+
 
 load_dotenv()
 
@@ -29,7 +29,7 @@ GEMINI_API_KEY = os.getenv(
 
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
-    "gemini-2.5-flash",
+    "gemini-3.6-flash",
 ).strip()
 
 
@@ -43,24 +43,43 @@ def _utc_now() -> str:
 def _serialize_investigation(
     investigation: Investigation,
 ) -> dict:
-    """Serialize an investigation database record."""
+    """
+    Convert a database investigation record into the
+    canonical MissionVault Sentinel API representation.
+    """
 
     try:
-        evidence = json.loads(
-            investigation.evidence or "[]"
+        stored_data = json.loads(
+            investigation.evidence or "{}"
         )
     except (
         json.JSONDecodeError,
         TypeError,
     ):
-        evidence = []
+        stored_data = {}
 
     return {
         "id": investigation.id,
         "incident_id": investigation.incident_id,
         "diagnosis": investigation.diagnosis,
         "confidence": investigation.confidence,
-        "evidence": evidence,
+        "evidence": stored_data.get(
+            "supporting_evidence",
+            [],
+        ),
+        "recommended_actions": stored_data.get(
+            "recommended_actions",
+            [],
+        ),
+        "risk": stored_data.get(
+            "risk",
+            "Unknown",
+        ),
+        "uncertainty": stored_data.get(
+            "uncertainty",
+            "Unknown",
+        ),
+        "human_review_required": True,
         "created_at": investigation.created_at,
     }
 
@@ -97,8 +116,9 @@ def _build_incident_prompt(
     """
     Build a controlled prompt from reconstructed incident data.
 
-    The prompt explicitly tells Gemini that anomaly
-    classification has already happened elsewhere.
+    Gemini receives the already-detected incident and its
+    telemetry context. It does not determine whether the
+    telemetry is anomalous.
     """
 
     incident = reconstruction.get(
@@ -138,9 +158,8 @@ identified this event as an anomaly and created an incident.
 You are NOT responsible for deciding whether the telemetry
 is anomalous.
 
-Your job is only to investigate the already-detected incident.
-
-Analyze ONLY the supplied incident context and telemetry.
+Your task is to investigate the already-detected incident
+using ONLY the supplied incident context and telemetry.
 
 Determine:
 
@@ -159,11 +178,13 @@ Rules:
 - Do not issue spacecraft commands.
 - Do not recommend autonomous spacecraft control.
 - Human review must remain required.
-- Use the telemetry history to compare conditions before,
+- Use telemetry history to compare conditions before,
   during, and after the anomaly when available.
 - Distinguish observations from conclusions.
-
-Return ONLY the structured response defined by the schema.
+- Return exactly the fields defined by the response schema.
+- Do not return Markdown.
+- Do not wrap the response in code fences.
+- Do not add additional fields.
 
 Incident context:
 
@@ -173,10 +194,10 @@ Incident context:
 
 def _run_gemini_investigation(
     reconstruction: dict,
-) -> AIInvestigationResponse:
+) -> InvestigationResponse:
     """
     Send reconstructed incident evidence to Gemini and
-    return a validated structured investigation.
+    return a strictly validated structured investigation.
     """
 
     if not GEMINI_API_KEY:
@@ -192,15 +213,24 @@ def _run_gemini_investigation(
         reconstruction
     )
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=AIInvestigationResponse,
-            temperature=0.2,
-        ),
-    )
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=InvestigationResponse,
+                temperature=0.2,
+            ),
+        )
+    except Exception as exc:
+        logger.exception(
+            "Gemini API request failed."
+        )
+
+        raise RuntimeError(
+            f"Gemini API request failed: {exc}"
+        ) from exc
 
     if not response.text:
         raise RuntimeError(
@@ -208,18 +238,22 @@ def _run_gemini_investigation(
         )
 
     try:
-        result = AIInvestigationResponse.model_validate_json(
-            response.text
+        result = (
+            InvestigationResponse.model_validate_json(
+                response.text
+            )
         )
     except ValidationError as exc:
         logger.exception(
             "Gemini returned invalid structured output."
         )
+
         raise RuntimeError(
             "Gemini returned an invalid investigation response."
         ) from exc
 
-    # Safety invariant for this prototype.
+    # MissionVault Sentinel safety invariant.
+    # AI investigation always requires human review.
     result.human_review_required = True
 
     return result
@@ -229,7 +263,7 @@ def create_initial_investigation(
     incident_id: int,
 ) -> dict | None:
     """
-    Run the real Gemini-powered investigation for an incident.
+    Run the Gemini-powered investigation for an incident.
 
     The incident must already exist and must already have a
     deterministic anomaly classification.
@@ -266,7 +300,9 @@ def create_initial_investigation(
                     ai_result.recommended_actions
                 ),
                 "risk": ai_result.risk,
-                "uncertainty": ai_result.uncertainty,
+                "uncertainty": (
+                    ai_result.uncertainty
+                ),
                 "human_review_required": True,
             },
             ensure_ascii=False,
@@ -279,20 +315,6 @@ def create_initial_investigation(
         db.commit()
         db.refresh(investigation)
 
-        result = _serialize_investigation(
+        return _serialize_investigation(
             investigation
         )
-
-    # Add the AI-specific fields to the API response.
-    result["recommended_actions"] = (
-        ai_result.recommended_actions
-    )
-
-    result["risk"] = ai_result.risk
-    result["uncertainty"] = (
-        ai_result.uncertainty
-    )
-
-    result["human_review_required"] = True
-
-    return result
