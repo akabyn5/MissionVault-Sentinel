@@ -144,11 +144,7 @@ def investigate_incident(
     payload: InvestigationRequest,
 ):
     """
-    Start an investigation for an incident.
-
-    This currently uses the deterministic investigation
-    foundation. Gemini integration will replace this
-    implementation in the next step.
+    Run the AI investigation for an existing incident.
     """
 
     incident = get_incident(
@@ -173,18 +169,37 @@ def investigate_incident(
                 "investigation": existing,
             }
 
-    investigation = create_initial_investigation(
-        incident_id=incident_id
-    )
+    try:
+        investigation = create_initial_investigation(
+            incident_id=incident_id
+        )
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "AI investigation failed."
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI investigation failed: {type(exc).__name__}: {exc}",
+        ) from exc
 
     if investigation is None:
         raise HTTPException(
             status_code=500,
-            detail="Unable to create investigation",
+            detail="Unable to create investigation.",
         )
 
     return {
-        "message": "Investigation created",
+        "message": "AI investigation completed",
         "investigation": investigation,
     }
 
