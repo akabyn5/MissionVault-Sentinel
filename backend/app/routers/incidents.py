@@ -24,6 +24,9 @@ from app.services.investigation_service import (
     get_investigation,
 )
 
+from app.services.evidence_service import (
+    get_incident_evidence,
+)
 
 router = APIRouter(
     prefix="/incidents",
@@ -65,6 +68,51 @@ def list_incidents():
 
     return get_all_incidents()
 
+# ---------------------------------------------------------
+# GET /incidents/{incident_id}/evidence
+# ---------------------------------------------------------
+
+@router.get("/{incident_id}/evidence")
+def read_incident_evidence(
+    incident_id: int,
+):
+    """
+    Generate the canonical evidence package for a completed incident.
+    """
+
+    try:
+        evidence = get_incident_evidence(
+            incident_id=incident_id
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "Evidence generation failed."
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Evidence generation failed: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
+
+    if evidence is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Incident not found",
+        )
+
+    return evidence
 
 # ---------------------------------------------------------
 # GET /incidents/{incident_id}

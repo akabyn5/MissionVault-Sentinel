@@ -46,3 +46,28 @@ export async function investigateIncident(incident, token = "") {
     return getMockInvestigation(incident.primary_anomaly);
   }
 }
+
+export async function createOperatorDecision(
+  incidentId,
+  decision,
+  note = "",
+  token = ""
+) {
+  if (!incidentId) {
+    throw new Error(
+      "Incident ID is missing."
+    );
+  }
+
+  return apiFetch(
+    `/incidents/${incidentId}/decision`,
+    {
+      method: "POST",
+      token,
+      body: {
+        decision,
+        note: note || null,
+      },
+    }
+  );
+}
