@@ -57,8 +57,15 @@ def _parse_timestamp(timestamp: str) -> datetime:
 
 def save_telemetry(data: Telemetry, analysis: dict) -> dict:
     """
-    Persist telemetry and attempt Midnight anchoring.
+    Persist telemetry, perform Midnight anchoring, and automatically
+    create a MissionVault Sentinel incident when an anomaly is detected.
     """
+
+    incident = None
+
+    # ---------------------------------------------------------
+    # Create telemetry database record
+    # ---------------------------------------------------------
     record = TelemetryRecord(
         satellite_id=data.satellite_id,
         battery=data.battery,
@@ -69,7 +76,9 @@ def save_telemetry(data: Telemetry, analysis: dict) -> dict:
         timestamp=data.timestamp.isoformat(),
         is_anomaly=analysis.get("is_anomaly", False),
         severity=analysis.get("severity", "normal"),
-        alerts=json.dumps(analysis.get("alerts", []))
+        alerts=json.dumps(
+            analysis.get("alerts", [])
+        ),
     )
 
     with SessionLocal() as db:
@@ -77,11 +86,9 @@ def save_telemetry(data: Telemetry, analysis: dict) -> dict:
         db.commit()
         db.refresh(record)
 
-        incident = create_incident(
-            data=data,
-            analysis=analysis,
-            )
-
+        # -----------------------------------------------------
+        # Midnight anchoring
+        # -----------------------------------------------------
         anchor_payload = {
             "record_id": record.id,
             "telemetry": {
@@ -91,48 +98,100 @@ def save_telemetry(data: Telemetry, analysis: dict) -> dict:
                 "signal_strength": record.signal_strength,
                 "cpu_load": record.cpu_load,
                 "payload_status": record.payload_status,
-                "timestamp": record.timestamp
+                "timestamp": record.timestamp,
             },
             "analysis": {
                 "is_anomaly": record.is_anomaly,
                 "severity": record.severity,
-                "alerts": json.loads(record.alerts or "[]")
-            }
+                "alerts": json.loads(
+                    record.alerts or "[]"
+                ),
+            },
         }
 
-        midnight_receipt = anchor_telemetry(anchor_payload)
+        midnight_receipt = anchor_telemetry(
+            anchor_payload
+        )
 
-        record.midnight_enabled = bool(midnight_receipt.get("enabled", False))
-        record.midnight_status = midnight_receipt.get("status", "local-only")
-        record.midnight_network = midnight_receipt.get("network")
-        record.midnight_contract_address = midnight_receipt.get("contract_address")
-        record.midnight_commitment = midnight_receipt.get("commitment")
-        record.midnight_tx_hash = midnight_receipt.get("tx_hash")
-        record.midnight_anchored_at = midnight_receipt.get("anchored_at")
-        record.midnight_error = midnight_receipt.get("error")
+        record.midnight_enabled = bool(
+            midnight_receipt.get("enabled", False)
+        )
+
+        record.midnight_status = midnight_receipt.get(
+            "status",
+            "local-only",
+        )
+
+        record.midnight_network = midnight_receipt.get(
+            "network"
+        )
+
+        record.midnight_contract_address = (
+            midnight_receipt.get(
+                "contract_address"
+            )
+        )
+
+        record.midnight_commitment = (
+            midnight_receipt.get(
+                "commitment"
+            )
+        )
+
+        record.midnight_tx_hash = (
+            midnight_receipt.get(
+                "tx_hash"
+            )
+        )
+
+        record.midnight_anchored_at = (
+            midnight_receipt.get(
+                "anchored_at"
+            )
+        )
+
+        record.midnight_error = (
+            midnight_receipt.get(
+                "error"
+            )
+        )
 
         db.add(record)
         db.commit()
         db.refresh(record)
 
-        logger.info("Stored telemetry packet ID: %d", record.id)
+        logger.info(
+            "Stored telemetry packet ID: %d",
+            record.id,
+        )
+
         logger.info(
             "Total stored packets: %d",
-            db.scalar(select(func.count(TelemetryRecord.id)))
-            )
+            db.scalar(
+                select(func.count(TelemetryRecord.id))
+            ),
+        )
 
-        serialized_record = _serialize_record(record)
-        # ---------------------------------------------------------
-        # Create MissionVault Sentinel incident
-        # ---------------------------------------------------------
+        serialized_record = _serialize_record(
+            record
+        )
+
+    # ---------------------------------------------------------
+    # MissionVault Sentinel incident creation
+    #
+    # This happens AFTER the telemetry transaction has
+    # completed, so incident_service can safely open its
+    # own database session.
+    # ---------------------------------------------------------
+    if analysis.get("is_anomaly", False):
         incident = create_incident(
             data=data,
             analysis=analysis,
-            )
+        )
 
-        serialized_record["incident"] = incident
+    serialized_record["incident"] = incident
 
-        return serialized_record
+    return serialized_record
 
 
 def get_all_telemetry() -> list[dict]:

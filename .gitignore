@@ -1,2 +1,7 @@
+<<<<<<< HEAD
 
 MissionVault-Sentinel/
+=======
+.env
+*.env
+>>>>>>> 12ac0cbcc872779fddac10942b4b795c6c772166

@@ -38,14 +38,18 @@ def receive_telemetry(data: Telemetry):
     print(data)
 
     analysis = analyze_telemetry(data)
-    record = save_telemetry(data, analysis)
+
+    record = save_telemetry(
+        data,
+        analysis,
+    )
 
     return {
         "message": "Telemetry received successfully",
         "satellite": data.satellite_id,
         "analysis": analysis,
         "incident": record.get("incident"),
-        "midnight": record.get("midnight", {})
+        "midnight": record.get("midnight", {}),
     }
 
 @router.get("/telemetry")
