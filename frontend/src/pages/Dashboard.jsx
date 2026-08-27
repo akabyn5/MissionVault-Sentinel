@@ -10,7 +10,8 @@ import SearchResultsCard from "../components/SearchResultsCard";
 import TrendsCard from "../components/TrendsCard";
 import AlertsCard from "../components/AlertsCard";
 import IncidentPage from "./IncidentPage";
-import { buildIncidentFromAlert } from "../utils/incidentUtils";
+import { deriveAnomalyType } from "../utils/incidentUtils";
+import { listIncidents } from "../services/incidentService";
 
 const REFRESH_INTERVAL = 5000;
 
@@ -87,9 +88,160 @@ export default function Dashboard({ token, onLogout }) {
     setSearchError(null);
   }
 
-  function handleViewIncident(alert, index) {
-    setActiveIncident(buildIncidentFromAlert(alert, index));
-  }
+  async function handleViewIncident(alert) {
+    try {
+        setError(null);
+
+        const incidents =
+            await listIncidents(token);
+
+        if (!Array.isArray(incidents) ||
+            incidents.length === 0) {
+            throw new Error(
+                "No backend incidents are available."
+            );
+        }
+
+        const telemetry =
+            alert?.telemetry || {};
+
+        const analysis =
+            alert?.analysis || {};
+
+        const messages =
+            Array.isArray(analysis.alerts)
+                ? analysis.alerts
+                : [];
+
+        const targetSatellite =
+            telemetry.satellite_id || "";
+
+        const targetAnomaly =
+            deriveAnomalyType(messages);
+
+        const targetTimestamp =
+            telemetry.timestamp
+                ? Date.parse(
+                    telemetry.timestamp
+                )
+                : NaN;
+
+        const candidates =
+            incidents.filter((incident) => {
+
+                if (
+                    targetSatellite &&
+                    incident.satellite_id !==
+                    targetSatellite
+                ) {
+                    return false;
+                }
+
+                if (
+                    targetAnomaly &&
+                    incident.primary_anomaly &&
+                    incident.primary_anomaly !==
+                    targetAnomaly
+                ) {
+                    return false;
+                }
+
+                return true;
+            });
+
+        const pool =
+            candidates.length > 0
+                ? candidates
+                : incidents;
+
+        const sorted =
+            [...pool].sort(
+                (a, b) => {
+
+                    const aTime =
+                        Date.parse(
+                            a.created_at ||
+                            a.timestamp ||
+                            ""
+                        );
+
+                    const bTime =
+                        Date.parse(
+                            b.created_at ||
+                            b.timestamp ||
+                            ""
+                        );
+
+                    if (
+                        Number.isNaN(
+                            targetTimestamp
+                        )
+                    ) {
+                        return (
+                            Number.isNaN(bTime)
+                                ? 0
+                                : Number.isNaN(aTime)
+                                    ? 1
+                                    : bTime - aTime
+                        );
+                    }
+
+                    const aDistance =
+                        Number.isNaN(aTime)
+                            ? Number.MAX_SAFE_INTEGER
+                            : Math.abs(
+                                aTime -
+                                targetTimestamp
+                            );
+
+                    const bDistance =
+                        Number.isNaN(bTime)
+                            ? Number.MAX_SAFE_INTEGER
+                            : Math.abs(
+                                bTime -
+                                targetTimestamp
+                            );
+
+                    return (
+                        aDistance -
+                        bDistance
+                    );
+                }
+            );
+
+        const realIncident =
+            sorted[0];
+
+        if (!realIncident) {
+            throw new Error(
+                "Unable to map alert to a backend incident."
+            );
+        }
+
+        setActiveIncident(
+            realIncident
+        );
+
+    } catch (err) {
+        if (
+            err.message ===
+            "UNAUTHORIZED"
+        ) {
+            onLogout?.();
+            return;
+        }
+
+        console.error(
+            "Failed to load real incident:",
+            err
+        );
+
+        setError(
+            err.message ||
+            "Failed to load incident."
+        );
+    }
+}
 
   function handleBackFromIncident() {
     setActiveIncident(null);
