@@ -1,26 +1,37 @@
-﻿function deriveSupportingSignals(investigation, anomalyType) {
-  const evidence = investigation?.evidence || [];
-  const signals = [];
-  const lower = evidence.map((e) => e.toLowerCase());
-  if (lower.some((e) => e.includes("cpu"))) signals.push("CPU increase");
-  if (lower.some((e) => e.includes("temperature") || e.includes("thermal"))) signals.push("Temperature excursion");
-  if (lower.some((e) => e.includes("battery") && e.includes("stable"))) signals.push("Stable battery");
-  if (lower.some((e) => e.includes("signal") && e.includes("stable"))) signals.push("Stable signal");
-  if (lower.some((e) => e.includes("battery") && (e.includes("drop") || e.includes("critical")))) signals.push("Battery drop");
-  if (lower.some((e) => e.includes("signal") && (e.includes("degrad") || e.includes("weak") || e.includes("fell")))) signals.push("Signal degradation");
-  if (lower.some((e) => e.includes("payload"))) signals.push("Payload error");
-  if (signals.length === 0) {
-    if (anomalyType === "thermal") signals.push("Temperature excursion", "CPU correlation");
-    else if (anomalyType === "battery") signals.push("Battery drop");
-    else if (anomalyType === "signal") signals.push("Signal degradation");
-    else if (anomalyType === "cpu") signals.push("CPU increase");
-    else if (anomalyType === "payload") signals.push("Payload error");
-    else signals.push("Threshold crossed");
-  }
-  return signals;
+﻿import { useState } from "react";
+import { getIncidentEvidence, verifyEvidence } from "../services/incidentService";
+
+function extractPackage(data) {
+  return data?.evidence_package ?? data?.package ?? data ?? null;
+}
+
+function extractSha256(data) {
+  return (
+    data?.sha256 ??
+    data?.evidence_sha256 ??
+    data?.fingerprint ??
+    data?.hash ??
+    null
+  );
+}
+
+function extractValidity(result) {
+  if (typeof result?.valid === "boolean") return result.valid;
+  if (typeof result?.match === "boolean") return result.match;
+  if (typeof result?.is_valid === "boolean") return result.is_valid;
+  return null;
 }
 
 export default function EvidencePanel({ incident, investigation, historyCount = 0 }) {
+  const [evidencePackage, setEvidencePackage] = useState(null);
+  const [sha256, setSha256] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState(null);
+
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [verifyError, setVerifyError] = useState(null);
+
   if (!investigation) {
     return (
       <section className="evidence-panel idle">
@@ -29,34 +40,111 @@ export default function EvidencePanel({ incident, investigation, historyCount = 
       </section>
     );
   }
-  const anomalyLabel = incident?.primary_anomaly_label || (incident?.primary_anomaly || "unknown").toUpperCase();
-  const supporting = deriveSupportingSignals(investigation, incident?.primary_anomaly);
-  const analyzedCount = historyCount > 0 ? historyCount : (investigation.evidence?.length || 0) + 5;
-  const timestamp = new Date().toISOString();
+
+  const incidentId = incident?.incident_id || incident?.id;
+
+  async function handleGenerate() {
+    setGenerating(true);
+    setGenerateError(null);
+    setVerifyResult(null);
+    setVerifyError(null);
+    try {
+      const data = await getIncidentEvidence(incidentId);
+      setEvidencePackage(extractPackage(data));
+      setSha256(extractSha256(data));
+    } catch (err) {
+      setGenerateError(
+        err.message === "UNAUTHORIZED"
+          ? "Session expired. Please log in again."
+          : err.message || "Failed to generate the evidence package."
+      );
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function handleVerify() {
+    if (!evidencePackage || !sha256) return;
+    setVerifying(true);
+    setVerifyError(null);
+    try {
+      const result = await verifyEvidence(evidencePackage, sha256);
+      setVerifyResult(extractValidity(result));
+    } catch (err) {
+      setVerifyError(
+        err.message === "UNAUTHORIZED"
+          ? "Session expired. Please log in again."
+          : err.message || "Failed to verify the evidence package."
+      );
+    } finally {
+      setVerifying(false);
+    }
+  }
+
   return (
     <section className="evidence-panel">
-      <div className="section-header"><h2>Evidence</h2></div>
+      <div className="section-header">
+        <h2>Evidence Package</h2>
+      </div>
+
       <div className="evidence-grid">
         <div className="evidence-field">
-          <span className="field-label">Telemetry records analyzed</span>
-          <p className="field-value large">{analyzedCount}</p>
+          <span className="field-label">Incident</span>
+          <p className="field-value">{incidentId || "—"}</p>
         </div>
         <div className="evidence-field">
-          <span className="field-label">Primary anomaly</span>
-          <p className="field-value">{anomalyLabel}</p>
-        </div>
-        <div className="evidence-field full-width">
-          <span className="field-label">Supporting signals</span>
-          <ul className="signal-list">{supporting.map((s, i) => <li key={i}>{s}</li>)}</ul>
+          <span className="field-label">Satellite</span>
+          <p className="field-value">{incident?.satellite_id || "—"}</p>
         </div>
         <div className="evidence-field">
-          <span className="field-label">Analysis timestamp</span>
-          <p className="field-value mono">
-            {new Date(timestamp).toLocaleTimeString("en-GB", { timeZone: "UTC", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })} UTC
-          </p>
+          <span className="field-label">Severity</span>
+          <p className="field-value">{incident?.severity || "—"}</p>
+        </div>
+        <div className="evidence-field">
+          <span className="field-label">Telemetry packets</span>
+          <p className="field-value">{historyCount}</p>
         </div>
       </div>
-      <p className="evidence-note">Information architecture for the future Evidence Chain (SHA-256 + verification).</p>
+
+      {!evidencePackage && (
+        <button
+          type="button"
+          className="btn-generate-evidence"
+          onClick={handleGenerate}
+          disabled={generating}
+        >
+          {generating ? "Generating..." : "GENERATE EVIDENCE PACKAGE"}
+        </button>
+      )}
+
+      {generateError && <p className="error-box">{generateError}</p>}
+
+      {sha256 && (
+        <div className="evidence-fingerprint">
+          <span className="field-label">SHA-256 FINGERPRINT</span>
+          <p className="field-value mono">{sha256}</p>
+        </div>
+      )}
+
+      {evidencePackage && (
+        <button
+          type="button"
+          className="btn-verify-evidence"
+          onClick={handleVerify}
+          disabled={verifying}
+        >
+          {verifying ? "Verifying..." : "VERIFY EVIDENCE"}
+        </button>
+      )}
+
+      {verifyError && <p className="error-box">{verifyError}</p>}
+
+      {verifyResult === true && (
+        <p className="verify-result valid">✓ VALID</p>
+      )}
+      {verifyResult === false && (
+        <p className="verify-result mismatch">✕ INTEGRITY MISMATCH</p>
+      )}
     </section>
   );
 }

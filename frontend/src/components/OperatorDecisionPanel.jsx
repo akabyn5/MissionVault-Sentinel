@@ -4,6 +4,7 @@ export default function OperatorDecisionPanel({ investigation, onDecision }) {
   const [note, setNote] = useState("");
   const [decision, setDecision] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
 
   if (!investigation) {
     return (
@@ -16,9 +17,14 @@ export default function OperatorDecisionPanel({ investigation, onDecision }) {
 
   async function handleDecision(type) {
     setSubmitting(true);
-    setDecision(type);
+    setError(null);
     try {
-      if (typeof onDecision === "function") await onDecision({ type, note });
+      if (typeof onDecision === "function") {
+        await onDecision({ type, note });
+      }
+      setDecision(type);
+    } catch (err) {
+      setError(err.message || "Failed to save the decision. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -29,9 +35,10 @@ export default function OperatorDecisionPanel({ investigation, onDecision }) {
       <section className="decision-panel decided">
         <h2>Operator Decision</h2>
         <div className="decision-recorded">
-          <p>Decision recorded: <strong>{decision.replace("_", " ").toUpperCase()}</strong></p>
+          <p>
+            Decision recorded: <strong>{decision.replace("_", " ").toUpperCase()}</strong>
+          </p>
           {note && <p className="decision-note-display">Note: {note}</p>}
-          <p className="hint">(In the full system this would be persisted via the decision endpoint.)</p>
         </div>
       </section>
     );
@@ -43,14 +50,45 @@ export default function OperatorDecisionPanel({ investigation, onDecision }) {
         <h2>Operator Decision</h2>
         <span className="priority-badge">P1</span>
       </div>
+
       <div className="decision-note-field">
-        <label htmlFor="decision-note">Decision note (optional)</label>
-        <textarea id="decision-note" rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add any operational context or rationale…" />
+        <label htmlFor="decision-note">Decision note</label>
+        <textarea
+          id="decision-note"
+          rows={3}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Add any operational context or rationale..."
+        />
       </div>
+
+      {error && <p className="error-box">{error}</p>}
+
       <div className="decision-actions">
-        <button type="button" className="btn-accept" disabled={submitting} onClick={() => handleDecision("accept")}>ACCEPT RECOMMENDATION</button>
-        <button type="button" className="btn-reject" disabled={submitting} onClick={() => handleDecision("reject")}>REJECT</button>
-        <button type="button" className="btn-reviewed" disabled={submitting} onClick={() => handleDecision("mark_reviewed")}>MARK AS REVIEWED</button>
+        <button
+          type="button"
+          className="btn-accept"
+          disabled={submitting}
+          onClick={() => handleDecision("accept")}
+        >
+          ACCEPT RECOMMENDATION
+        </button>
+        <button
+          type="button"
+          className="btn-reject"
+          disabled={submitting}
+          onClick={() => handleDecision("reject")}
+        >
+          REJECT
+        </button>
+        <button
+          type="button"
+          className="btn-reviewed"
+          disabled={submitting}
+          onClick={() => handleDecision("mark_reviewed")}
+        >
+          MARK AS REVIEWED
+        </button>
       </div>
     </section>
   );
