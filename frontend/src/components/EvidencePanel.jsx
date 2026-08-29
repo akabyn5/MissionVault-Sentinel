@@ -11,7 +11,7 @@
     if (!investigation) {
         return (
             <section className="evidence-panel idle">
-                <h2>Evidence Chain</h2>
+                <h2>Evidence Integrity</h2>
 
                 <p className="muted">
                     Complete the AI investigation first.
@@ -23,7 +23,7 @@
     if (!evidence) {
         return (
             <section className="evidence-panel idle">
-                <h2>Evidence Chain</h2>
+                <h2>Evidence Integrity</h2>
 
                 <p className="muted">
                     Evidence Package will be generated
@@ -54,11 +54,11 @@
 
             <div className="section-header">
                 <h2>
-                    Evidence Chain
+                    Evidence Integrity
                 </h2>
 
                 <span className="priority-badge">
-                    SHA-256
+                    LOCAL INTEGRITY
                 </span>
             </div>
 

@@ -20,6 +20,8 @@ import InvestigationPanel
 import EvidencePanel
     from "../components/EvidencePanel";
 
+import MidnightPrivacyPanel 
+    from "../components/MidnightPrivacyPanel";
 import RecommendationPanel
     from "../components/RecommendationPanel";
 
@@ -440,6 +442,12 @@ export default function IncidentPage({
                 onTamperTest={
                     handleTamperTest
                 }
+            />
+
+            <MidnightPrivacyPanel
+                evidence={evidence}
+                verification={verification}
+                loading={verifying}
             />
 
         </div>
